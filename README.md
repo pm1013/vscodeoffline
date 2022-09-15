@@ -141,6 +141,14 @@ optional arguments:
   --total-recommended N 
                         The number of recommended extensions to fetch
                         (default: 200)
+  --platforms PLATFORMS
+                        Platforms to check
+  --architectures ARCHITECTURES
+                        Architectures to check
+  --buildtypes BUILDTYPES
+                        Build types to check
+  --qualities QUALITIES
+                        Qualities to check                    
   --check-binaries      Check for updated binaries
   --check-insider       Check for updated insider binaries
   --check-recommended-extensions
