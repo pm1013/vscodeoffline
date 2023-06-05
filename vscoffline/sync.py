@@ -6,17 +6,17 @@ import requests
 import pathlib
 import hashlib
 import uuid
-import logzero
 import logging
 import json
 import time
 import datetime
 from typing import List
 from platform import release
-from logzero import logger as log
+import logging as log
 from pytimeparse.timeparse import timeparse
 import vsc
 from distutils.dir_util import create_tree
+from requests.adapters import HTTPAdapter, Retry
 
 
 class VSCUpdateDefinition(object):
@@ -225,7 +225,7 @@ class VSCExtensionDefinition(object):
             if 'extensionId' in raw:
                 self.extensionId = raw['extensionId']
 
-    def download_assets(self, destination):
+    def download_assets(self, destination, session):
         for version in self.versions:
             targetplatform = ''
             if "targetPlatform" in version:
@@ -242,12 +242,21 @@ class VSCExtensionDefinition(object):
                 destfile = os.path.join(ver_destination, f'{asset}')
                 create_tree(os.path.abspath(os.sep), (destfile,))
                 if not os.path.exists(destfile):
-                    log.debug(
-                        f'Downloading {self.identity} {asset} to {destfile}')
-                    result = requests.get(
-                        url, allow_redirects=True, timeout=vsc.TIMEOUT)
-                    with open(destfile, 'wb') as dest:
-                        dest.write(result.content)
+                    for i in range(5):
+                        try:
+                            if i == 0:
+                                log.debug(f'Downloading {self.identity} {asset} to {destfile}')
+                            else:
+                                log.info(f'Retrying {i+1}, download {self.identity} {asset} to {destfile}')
+                            result = session.get(
+                                url, allow_redirects=True, timeout=vsc.TIMEOUT)
+                            with open(destfile, 'wb') as dest:
+                                dest.write(result.content)
+                            break
+                        except requests.exceptions.ProxyError:
+                            log.info("ProxyError: Retrying.")
+                        except requests.exceptions.ReadTimeout:
+                            log.info("ReadTimeout: Retrying.")
 
     def process_embedded_extensions(self, destination, mp):
         """
@@ -321,13 +330,13 @@ class VSCExtensionDefinition(object):
 class VSCUpdates(object):
 
     @staticmethod
-    def latest_versions(insider=False):
+    def latest_versions(config):
         versions = {}
-        for platform in vsc.PLATFORMS:
-            for architecture in vsc.ARCHITECTURES:
-                for buildtype in vsc.BUILDTYPES:
-                    for quality in vsc.QUALITIES:
-                        if quality == 'insider' and not insider:
+        for platform in config.platforms:
+            for architecture in config.architectures:
+                for buildtype in config.buildtypes:
+                    for quality in config.qualities:
+                        if quality == 'insider' and not config.checkinsider:
                             continue
                         if platform == 'win32' and architecture == 'ia32':
                             continue
@@ -354,10 +363,11 @@ class VSCUpdates(object):
 
 class VSCMarketplace(object):
 
-    def __init__(self, insider, prerelease, version):
+    def __init__(self, insider, prerelease, version, session):
         self.insider = insider
         self.prerelease = prerelease
         self.version = version
+        self.session = session
 
     def get_recommendations(self, destination, totalrecommended):
         recommendations = self.search_top_n(totalrecommended)
@@ -389,7 +399,7 @@ class VSCMarketplace(object):
         return recommendations
 
     def get_recommendations_old(self, destination):
-        result = requests.get(vsc.URL_RECOMMENDATIONS,
+        result = self.session.get(vsc.URL_RECOMMENDATIONS,
                               allow_redirects=True, timeout=vsc.TIMEOUT)
         if result.status_code != 200:
             log.warning(
@@ -409,7 +419,7 @@ class VSCMarketplace(object):
         return packages
 
     def get_malicious(self, destination, extensions=None):
-        result = requests.get(
+        result = self.session.get(
             vsc.URL_MALICIOUS, allow_redirects=True, timeout=vsc.TIMEOUT)
         if result.status_code != 200:
             log.warning(
@@ -526,7 +536,7 @@ class VSCMarketplace(object):
                     log.info("Retrying pull page %d attempt %d." %
                              (pageNumber, i+1))
                 try:
-                    result = requests.post(vsc.URL_MARKETPLACEQUERY, headers=self._headers(
+                    result = self.session.post(vsc.URL_MARKETPLACEQUERY, headers=self._headers(
                     ), json=query, allow_redirects=True, timeout=vsc.TIMEOUT)
                     if result:
                         break
@@ -631,6 +641,14 @@ if __name__ == '__main__':
                         help='The frequency to try and update (e.g. sleep for \'12h\' and try again')
 
     # Arguments to tweak behaviour
+    parser.add_argument('--platforms', dest='platforms',
+                        default=vsc.PLATFORMS, help='Platforms to check')
+    parser.add_argument('--architectures', dest='architectures',
+                        default=vsc.ARCHITECTURES, help='Architectures to check')
+    parser.add_argument('--buildtypes', dest='buildtypes',
+                        default=vsc.BUILDTYPES, help='Build types to check')
+    parser.add_argument('--qualities', dest='qualities',
+                        default=vsc.QUALITIES, help='Qualities to check')
     parser.add_argument('--check-binaries', dest='checkbinaries',
                         action='store_true', help='Check for updated binaries')
     parser.add_argument('--check-insider', dest='checkinsider',
@@ -664,21 +682,41 @@ if __name__ == '__main__':
     config = parser.parse_args()
 
     if config.debug:
-        logzero.loglevel(logging.DEBUG)
+        loglevel = logging.DEBUG
     else:
-        logzero.loglevel(logging.INFO)
+        loglevel = logging.INFO
 
     if config.logfile:
         log_dir = os.path.dirname(os.path.abspath(config.logfile))
         if not os.path.exists(log_dir):
             raise FileNotFoundError(
                 f'Log directory does not exist at {log_dir}')
-        logzero.logfile(config.logfile, maxBytes=1000000, backupCount=3)
+        logging.basicConfig(filename=config.logfile, encoding='utf-8', level=loglevel)
+    else:
+        log.basicConfig(
+            format='[%(levelname)1.1s %(asctime)s %(module)s:%(lineno)d] %(message)s',
+            datefmt='%y%m%d %H:%M:%S',
+            level=loglevel
+        )
 
     config.artifactdir_installers = os.path.join(
         os.path.abspath(config.artifactdir), 'installers')
     config.artifactdir_extensions = os.path.join(
         os.path.abspath(config.artifactdir), 'extensions')
+
+    # Splits the list of platforms, architecturs, build types and qualities
+    #  if it was taken from the command line
+    if isinstance(config.platforms, str):
+        config.platforms = config.platforms.split(',')
+
+    if isinstance(config.architectures, str):
+        config.architectures = config.architectures.split(',')
+    
+    if isinstance(config.buildtypes, str):
+        config.buildtypes = config.buildtypes.split(',')
+
+    if isinstance(config.qualities, str):
+        config.qualities = config.qualities.split(',')
 
     if config.sync or config.syncall:
         config.checkbinaries = True
@@ -705,15 +743,21 @@ if __name__ == '__main__':
     if config.frequency:
         config.frequency = timeparse(config.frequency)
 
+    session = requests.Session()
+    retries = Retry(total=5,
+            backoff_factor=0.1,
+            status_forcelist=[ 500, 502, 503, 504 ])
+    session.mount('https://', HTTPAdapter(max_retries=retries))
+
     while True:
         versions = []
         extensions = {}
         mp = VSCMarketplace(config.checkinsider,
-                            config.prerelease, config.version)
+                            config.prerelease, config.version, session)
 
         if config.checkbinaries and not config.skipbinaries:
             log.info('Syncing VS Code Update Versions')
-            versions = VSCUpdates.latest_versions(config.checkinsider)
+            versions = VSCUpdates.latest_versions(config)
 
         if config.updatebinaries and not config.skipbinaries:
             log.info('Syncing VS Code Binaries')
@@ -776,7 +820,7 @@ if __name__ == '__main__':
                     log.info(
                         f'Progress {count}/{len(extensions)} ({count/len(extensions)*100:.1f}%)')
                 extensions[identity].download_assets(
-                    config.artifactdir_extensions)
+                    config.artifactdir_extensions, session)
                 bonus = extensions[identity].process_embedded_extensions(
                     config.artifactdir_extensions, mp) + bonus
                 extensions[identity].save_state(config.artifactdir_extensions)
@@ -784,7 +828,7 @@ if __name__ == '__main__':
 
             for bonusextension in bonus:
                 log.debug(f'Processing Embedded Extension: {bonusextension}')
-                bonusextension.download_assets(config.artifactdir_extensions)
+                bonusextension.download_assets(config.artifactdir_extensions, session)
                 bonusextension.save_state(config.artifactdir_extensions)
 
         log.info('Complete')

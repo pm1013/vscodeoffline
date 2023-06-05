@@ -1,7 +1,7 @@
 import os, sys, time, json, glob
 import falcon
 from distutils.version import LooseVersion
-from logzero import logger as log
+import logging as log
 from wsgiref import simple_server
 from watchdog.observers.polling import PollingObserver
 from watchdog.events import FileSystemEventHandler
@@ -41,8 +41,9 @@ class VSCUpdater(object):
             log.warning(f'Update payload hash mismatch {updatepath}')
             resp.status = falcon.HTTP_403
             return
-        # Url to get update
-        latest['url'] = vsc.URLROOT + updatepath
+        # Url to get update, relative to artifacts URL
+        updateurl = os.path.join('/artifacts', os.path.relpath(updatepath, vsc.ARTIFACTS_INSTALLERS))
+        latest['url'] = vsc.URLROOT + updateurl
         log.debug(f'Client {platform}, Quality {buildquality}. Providing update {updatepath}')
         resp.status = falcon.HTTP_200
         resp.media = latest
@@ -74,8 +75,9 @@ class VSCBinaryFromCommitId(object):
             log.warning(resp.content)
             resp.status = falcon.HTTP_403
             return
-        # Url for the client to fetch the update
-        resp.set_header('Location', vsc.URLROOT + updatepath)
+        # Url for the client to fetch the update, relative to artifact URL
+        updateurl = os.path.join('/artifacts', os.path.relpath(updatepath, vsc.ARTIFACTS_INSTALLERS))
+        resp.set_header('Location', vsc.URLROOT + updateurl)
         resp.status = falcon.HTTP_302
 
 class VSCRecommendations(object):
@@ -163,10 +165,17 @@ class VSCGallery(object):
             for version in extension["versions"]:
                 if "targetPlatform" in version:
                     targetPlatform = version['targetPlatform']
+<<<<<<< HEAD
                     asseturi = vsc.URLROOT + os.path.join(extensiondir, version['version'], targetPlatform)
-                else:                    
+                else:
                     asseturi = vsc.URLROOT + os.path.join(extensiondir, version['version'])
+=======
+                    assetpath = os.path.join(extensiondir, version['version'], targetPlatform)
+                else:                    
+                    assetpath =  os.path.join(extensiondir, version['version'])
+>>>>>>> 3a4e7f2... Added command line arguments to sync.py to control platforms, architectures, build types and qualities. Seperated out filesystem path and server URL in server.py to allow for running outside of Docker.
 
+                asseturi = vsc.URLROOT + '/artifacts/' + os.path.relpath(assetpath, vsc.ARTIFACTS);
                 version['assetUri'] = asseturi
                 version['fallbackAssetUri'] = asseturi
                 for asset in version['files']:
@@ -352,7 +361,7 @@ class VSCIndex(object):
 
     def on_get(self, req, resp):
         resp.content_type = 'text/html'
-        with open('/opt/vscoffline/vscgallery/content/index.html', 'r') as f:
+        with open(os.path.join(vsc.GALLERY, 'content/index.html', 'r') as f:
             resp.body = f.read()
         resp.status = falcon.HTTP_200
 
@@ -369,7 +378,7 @@ class VSCDirectoryBrowse(object):
             return
         resp.content_type = 'text/html'
         # Load template and replace variables
-        with open('/opt/vscoffline/vscgallery/content/browse.html', 'r') as f:
+        with open(os.path.join(vsc.GALLERY, 'content/browse.html'), 'r') as f:
             resp.body = f.read()
         resp.body = resp.body.replace('{PATH}', requested_path)
         resp.body = resp.body.replace('{CONTENT}', self.simple_dir_browse_response(requested_path))
@@ -413,7 +422,7 @@ log.debug('Waiting for gallery cache to load')
 #vscgallery.loaded.wait()
 
 observer = PollingObserver()
-observer.schedule(ArtifactChangedHandler(vscgallery), '/artifacts/', recursive=False)
+observer.schedule(ArtifactChangedHandler(vscgallery), vsc.ARTIFACTS, recursive=False)
 observer.start()
 
 application = falcon.App(cors_enable=True)
@@ -424,8 +433,13 @@ application.add_route('/extensions/marketplace.json', VSCMalicious())
 application.add_route('/_apis/public/gallery/extensionquery', vscgallery)
 application.add_route('/browse', VSCDirectoryBrowse(vsc.ARTIFACTS))
 application.add_route('/', VSCIndex())
-application.add_static_route('/artifacts/', '/artifacts/')
+application.add_static_route('/artifacts', vsc.ARTIFACTS)
 
 if __name__ == '__main__':
+    log.basicConfig(
+        format='[%(levelname)1.1s %(asctime)s %(module)s:%(lineno)d] %(message)s',
+        datefmt='%y%m%d %H:%M:%S',
+        level=log.DEBUG
+    )
     httpd = simple_server.make_server('0.0.0.0', 5000, application)
     httpd.serve_forever()
