@@ -372,8 +372,9 @@ class VSCDirectoryBrowse(object):
 
     def on_get(self, req, resp):
         requested_path = os.path.join(self.root, req.get_param('path', required=True))
+        full_path = os.path.realpath(os.path.join(self.root, requested_path))
         # Check the path requested
-        if os.path.commonprefix((os.path.realpath(requested_path), self.root)) != self.root:
+        if os.path.commonprefix(full_path, self.root) != self.root:
             resp.status = falcon.HTTP_403
             return
         resp.content_type = 'text/html'
@@ -386,11 +387,12 @@ class VSCDirectoryBrowse(object):
 
     def simple_dir_browse_response(self, path):
         response = ''
-        for item in vsc.Utility.folders_in_folder(path):
+        full_path = os.path.realpath(os.path.join(self.root, requested_path))
+        for item in vsc.Utility.folders_in_folder(full_path):
             response += f'd <a href="/browse?path={os.path.join(path, item)}">{item}</a><br />'
-        for item in vsc.Utility.files_in_folder(path):
+        for item in vsc.Utility.files_in_folder(full_path):
             if item != path:
-                response += f'f <a href="{os.path.join(self.root, path, item)}">{item}</a><br />'
+                response += f'f <a href="artifacts/{os.path.join(path, item)}">{item}</a><br />'
         return response
 
 class ArtifactChangedHandler(FileSystemEventHandler):
